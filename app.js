@@ -24,7 +24,7 @@
 /* =========================
    後端 API 網域（可依環境調整）
    ========================= */
-const API_BASE = "https://taipei-marathon-server.onrender.com";
+const API_BASE = "https://taipei-marathon-server-7sc3.onrender.com";
 const api = (p) => `${API_BASE}${p}`;
 
 /* =========================
