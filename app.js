@@ -156,7 +156,7 @@ function render() {
    - 入口：sendText(text?)
    - 若無 text 參數，則取 input 欄位的值
    ========================= */
-async function sendText(text) {
+async function sendText(text,timeoutMinutes = 5) {
   const content = (text ?? elInput?.value ?? "").trim();
   if (!content) return;
 
@@ -172,105 +172,169 @@ async function sendText(text) {
   // 進入思考中（直到收到回覆才關閉）
   setThinking(true);
 
+  const POLL_INTERVAL_MS = 3000; // 輪詢間隔：3 秒
+  const TIMEOUT_MS = timeoutMinutes * 60 * 1000; // 超時時間（轉換成毫秒）
+
+  // 1. 發送初始請求
+  console.log('🚀 發送初始請求...');
   try {
-    // 呼叫後端 /api/chat（傳送已處理問號的內容）
-    const res = await fetch(api("/api/chat"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Client-Id": clientId,
-      },
-      body: JSON.stringify({ 
-        text: contentToSend,  // ★ 使用已處理問號的內容
-        clientId, 
-        language: "繁體中文" 
-      }),
-    });
+      const initialResponse = await fetch('/api/chat/start', {
+          method: 'POST',
+          headers: {
+            "Content-Type": "application/json",
+            "X-Client-Id": clientId,
+          },
+          body: JSON.stringify({ 
+            text: contentToSend,  // ★ 使用已處理問號的內容
+            clientId, 
+            language: "繁體中文" 
+          }),
+      });
 
-    // 以文字讀回（避免直接 .json() 遇到空字串拋錯）
-    const raw = await res.text();
-
-    // 嘗試 JSON 解析；若 raw 為空字串，視為 {}
-    let data;
-    try {
-      data = raw ? JSON.parse(raw) : {};
-    } catch {
-      // 若 JSON 解析失敗，保留原始字串於 errorRaw 便於除錯
-      data = { errorRaw: raw };
-    }
-
-    // HTTP 狀態非 2xx 時，直接丟錯
-    if (!res.ok) {
-      // ★ 新增：特別處理 502 / 404
-      if (res.status === 502 || res.status === 404) {
-        throw new Error("網路不穩定，請再試一次!");
+      if (initialResponse.status !== 202) {
+          console.error('❌ 初始請求失敗或狀態碼錯誤:', initialResponse.status);
+          // 處理非 202 錯誤
+          return;
       }
 
-      // 優先使用後端提供的錯誤訊息欄位
-      const serverMsg =
-        (data && (data.error || data.body || data.message)) ?? raw ?? "unknown error";
-      throw new Error(`HTTP ${res.status} ${res.statusText} — ${serverMsg}`);
-    }
+      const { requestID } = await initialResponse.json();
+      const startTime = Date.now(); // 記錄開始輪詢的時間
+      let intervalId = null; // 輪詢計時器的 ID
+      let timeoutId = null; // 超時計時器的 ID
 
-    /**
-     * ★ 修正：整理機器人要顯示的文字
-     * 規則：
-     * 1) 若 data 是字串，直接當回覆
-     * 2) 若 data 是物件且有 text 或 message 欄位：
-     *    - 如果內容為空字串 → 顯示「請換個說法，謝謝您」
-     *    - 如果有內容 → 顯示該內容
-     * 3) 若是空物件 {} → 顯示「網路不穩定，請再試一次」
-     * 4) 其他物件 → JSON 字串化後顯示（利於除錯）
-     */
-    let replyText;
-    
-    if (typeof data === "string") {
-      // 情況1: data 本身就是字串
-      replyText = data.trim() || "請換個說法，謝謝您";
-    } else if (data && typeof data === "object") {
-      // 情況2: data 是物件
-      
-      // 檢查是否有 text 或 message 欄位
-      const hasTextField = 'text' in data || 'message' in data;
-      
-      if (hasTextField) {
-        // 有 text 或 message 欄位，取出其值
-        const textValue = data.text !== undefined ? data.text : data.message;
-        
-        // 確保是字串並處理空值情況
-        if (textValue === "" || textValue === null || textValue === undefined) {
-          // ★ 關鍵修正：當 text 欄位存在但為空時，顯示「請換個說法，謝謝您」
-          replyText = "請換個說法，謝謝您";
-        } else {
-          // 有實際內容時顯示內容
-          replyText = String(textValue).trim() || "請換個說法，謝謝您";
-        }
-      } else {
-        // 沒有 text 或 message 欄位
-        const isPlainEmptyObject = 
-          !Array.isArray(data) && 
-          Object.keys(data).filter(k => k !== 'clientId').length === 0;
-        
-        if (isPlainEmptyObject) {
-          // 空物件或只有 clientId 的物件
-          replyText = "網路不穩定，請再試一次";
-        } else {
-          // 其他物件，顯示 JSON 便於除錯
-          replyText = JSON.stringify(data, null, 2);
-        }
-      }
-    } else {
-      // 其他非預期的資料型態
-      replyText = "請換個說法，謝謝您";
-    }
+      // ** A. 設定超時計時器 **
+      timeoutId = setTimeout(() => {
+          clearInterval(intervalId); // 超時發生時，停止輪詢
+          console.error(`🚨 輪詢超時！已超過 ${timeoutMinutes} 分鐘。Request ID: ${requestID}`);
+          document.getElementById('result').innerText = `錯誤：操作超時（超過 ${timeoutMinutes} 分鐘）。`;
+          // 可在此處向用戶顯示錯誤或進行錯誤記錄
+      }, TIMEOUT_MS);
 
-    // 推入機器人訊息
-    const botMsg = { id: uid(), role: "assistant", text: replyText, ts: Date.now() };
-    messages.push(botMsg);
-    
-    // 關閉思考中 → 再渲染
-    setThinking(false);
-    render();
+      console.log(`⏱️ 輪詢啟動，超時限制：${timeoutMinutes} 分鐘。`);
+
+      // 2. 開始輪詢
+      intervalId = setInterval(async () => {
+          const res = await fetch(`/api/chat/result/${requestID}`);
+
+          // 【可選】在輪詢時檢查是否已超時 (作為備用檢查)
+          // if (Date.now() - startTime > TIMEOUT_MS) {
+          //     clearInterval(intervalId);
+          //     clearTimeout(timeoutId); // 確保清除超時計時器
+          //     console.error('🚨 輪詢超時 (備用檢查觸發)！');
+          //     return;
+          // }
+
+          // 以文字讀回（避免直接 .json() 遇到空字串拋錯）
+          const raw = await res.text();
+
+          // 嘗試 JSON 解析；若 raw 為空字串，視為 {}
+          let data;
+          try {
+            data = raw ? JSON.parse(raw) : {};
+          } catch {
+            // 若 JSON 解析失敗，保留原始字串於 errorRaw 便於除錯
+            data = { errorRaw: raw };
+          }
+
+          // HTTP 狀態非 2xx 時，直接丟錯
+          if (!res.ok) {
+            // ★ 新增：特別處理 502 / 404
+            if (res.status === 502 || res.status === 404) {
+              throw new Error("網路不穩定，請再試一次!");
+            }
+
+            // 優先使用後端提供的錯誤訊息欄位
+            const serverMsg =
+              (data && (data.error || data.body || data.message)) ?? raw ?? "unknown error";
+            throw new Error(`HTTP ${res.status} ${res.statusText} — ${serverMsg}`);
+          }
+
+          if (data.status === 'completed') {
+              // 3. 收到結果，停止所有計時器
+              clearInterval(intervalId);
+              clearTimeout(timeoutId); // ⭐ 這是關鍵：成功後必須清除超時計時器
+              console.log('✅ 成功收到最終結果:', data);
+              /**
+               * ★ 修正：整理機器人要顯示的文字
+               * 規則：
+               * 1) 若 data 是字串，直接當回覆
+               * 2) 若 data 是物件且有 text 或 message 欄位：
+               *    - 如果內容為空字串 → 顯示「請換個說法，謝謝您」
+               *    - 如果有內容 → 顯示該內容
+               * 3) 若是空物件 {} → 顯示「網路不穩定，請再試一次」
+               * 4) 其他物件 → JSON 字串化後顯示（利於除錯）
+               */
+              let replyText;
+              
+              if (typeof data === "string") {
+                // 情況1: data 本身就是字串
+                replyText = data.trim() || "請換個說法，謝謝您";
+              } else if (data && typeof data === "object") {
+                // 情況2: data 是物件
+                
+                // 檢查是否有 text 或 message 欄位
+                const hasTextField = 'text' in data || 'message' in data;
+                
+                if (hasTextField) {
+                  // 有 text 或 message 欄位，取出其值
+                  const textValue = data.text !== undefined ? data.text : data.message;
+                  
+                  // 確保是字串並處理空值情況
+                  if (textValue === "" || textValue === null || textValue === undefined) {
+                    // ★ 關鍵修正：當 text 欄位存在但為空時，顯示「請換個說法，謝謝您」
+                    replyText = "請換個說法，謝謝您";
+                  } else {
+                    // 有實際內容時顯示內容
+                    replyText = String(textValue).trim() || "請換個說法，謝謝您";
+                  }
+                } else {
+                  // 沒有 text 或 message 欄位
+                  const isPlainEmptyObject = 
+                    !Array.isArray(data) && 
+                    Object.keys(data).filter(k => k !== 'clientId').length === 0;
+                  
+                  if (isPlainEmptyObject) {
+                    // 空物件或只有 clientId 的物件
+                    replyText = "網路不穩定，請再試一次";
+                  } else {
+                    // 其他物件，顯示 JSON 便於除錯
+                    replyText = JSON.stringify(data, null, 2);
+                  }
+                }
+              } else {
+                // 其他非預期的資料型態
+                replyText = "請換個說法，謝謝您";
+              }
+
+              // 推入機器人訊息
+              const botMsg = { id: uid(), role: "assistant", text: replyText, ts: Date.now() };
+              messages.push(botMsg);
+              
+              // 關閉思考中 → 再渲染
+              setThinking(false);
+              render();
+          } else if (data.status === 'failed' || data.status === 'error') {
+              // 處理後端明確返回的失敗狀態
+              clearInterval(intervalId);
+              clearTimeout(timeoutId);
+              console.error('❌ 任務處理失敗:', data);
+              // 發生錯誤時也要關閉思考動畫
+              setThinking(false);
+
+              const botErr = {
+                id: uid(),
+                role: "assistant",
+                text: "目前處於離線狀態，請檢查網路連線後再試一次",
+                ts: Date.now(),
+              };
+              messages.push(botErr);
+              render();
+          } else {
+              // 4. 仍在處理中
+              console.log('⏳ 仍在處理中，已耗時:', (Date.now() - startTime) / 1000, '秒');
+          }
+      }, POLL_INTERVAL_MS);
+
   } catch (err) {
     // 發生錯誤時也要關閉思考動畫
     setThinking(false);
@@ -298,13 +362,13 @@ async function sendText(text) {
    ========================= */
 
 // 按鈕點擊送出
-elBtnSend?.addEventListener("click", () => sendText());
+elBtnSend?.addEventListener("click", () => sendText(undefined, 20));
 
 // Enter 送出（Shift+Enter 換行）
 elInput?.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault(); // 防止換行
-    sendText();
+    sendText(undefined, 20);
   }
 });
 
