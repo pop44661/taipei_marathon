@@ -172,7 +172,7 @@ async function sendText(text,timeoutMinutes = 5) {
   // 進入思考中（直到收到回覆才關閉）
   setThinking(true);
 
-  const POLL_INTERVAL_MS = 10000; // 輪詢間隔：10 秒
+  const POLL_INTERVAL_MS = 5000; // 輪詢間隔：5 秒
   const TIMEOUT_MS = timeoutMinutes * 60 * 1000; // 超時時間（轉換成毫秒）
 
   // 1. 發送初始請求
