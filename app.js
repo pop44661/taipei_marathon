@@ -193,7 +193,22 @@ async function sendText(text,timeoutMinutes = 5) {
 
       if (initialResponse.status !== 202) {
           console.error('❌ 初始請求失敗或狀態碼錯誤:', initialResponse.status);
-          // 處理非 202 錯誤
+          setThinking(false);
+
+          // 統一錯誤訊息格式
+          const friendly =
+            // 若使用者裝置離線，提供更直覺提示
+            (!navigator.onLine && "目前處於離線狀態，請檢查網路連線後再試一次") ||
+            // 其他錯誤，帶上簡短錯誤說明
+            `${err?.message || err}`;
+      
+          const botErr = {
+            id: uid(),
+            role: "assistant",
+            text: friendly,
+            ts: Date.now(),
+          };
+          messages.push(botErr);
           return;
       }
 
