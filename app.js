@@ -178,7 +178,7 @@ async function sendText(text,timeoutMinutes = 5) {
   // 1. 發送初始請求
   console.log('🚀 發送初始請求...');
   try {
-      const initialResponse = await fetch('/api/chat/start', {
+      const initialResponse = await fetch(api("/api/chat/start", {
           method: 'POST',
           headers: {
             "Content-Type": "application/json",
@@ -214,7 +214,7 @@ async function sendText(text,timeoutMinutes = 5) {
 
       // 2. 開始輪詢
       intervalId = setInterval(async () => {
-          const res = await fetch(`/api/chat/result/${requestID}`);
+          const res = await fetch(api(`/api/chat/result/${requestID}`);
 
           // 【可選】在輪詢時檢查是否已超時 (作為備用檢查)
           // if (Date.now() - startTime > TIMEOUT_MS) {
